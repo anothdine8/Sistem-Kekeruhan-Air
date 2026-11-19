@@ -1,0 +1,112 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// --- KONFIGURASI WIFI & THINGSPEAK ---
+const char* ssid = "AAAAAAA";
+const char* password = "AAAAAAAAA";
+const char* serverName = "http://api.thingspeak.com/update";
+String apiKey = "AAAAAAAAAAAA"; 
+
+// --- PIN & RESISTOR ---
+const int turbidityPin = 34;
+const float R1 = 10.0;
+const float R2 = 20.0;
+
+// --- VARIABEL WAKTU & FILTER DIGITAL ---
+unsigned long previousMillis = 0;
+const long interval = 30000; // 30 detik
+
+const int jumlahSampel = 30;
+int arraySampel[jumlahSampel];
+int indexSampel = 0;
+long totalSampel = 0;
+
+// =========================================================================
+// --- VARIABEL KELAS & LABEL MANUAL (SESUAIKAN TIAP GANTI SAMPEL FISIK) ---
+// Sesuai instruksi dosen: Label harus independen dari pembacaan sensor.
+// Ubah variabel di bawah ini SECARA MANUAL di kode sebelum mengupload/menjalankan 
+// pengujian untuk sampel air tertentu (Kelas: 1 = Jernih, 2 = Keruh Sedang, 3 = Sangat Keruh)
+// =========================================================================
+int currentKelas = 3;                           
+String currentLabel = "Sangat_Keruh"; // Contoh: "Jernih", "Keruh_Sedang", "Sangat_Keruh"
+String currentNamaSampel = "Air_SusuPekat"; // Nama sampel fisik yang sedang diuji
+
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Inisialisasi awal Filter Digital agar angka tidak mulai dari 0
+  int nilaiAwal = analogRead(turbidityPin);
+  for (int i = 0; i < jumlahSampel; i++) {
+    arraySampel[i] = nilaiAwal;
+    totalSampel += nilaiAwal;
+  }
+  
+  WiFi.begin(ssid, password);
+  Serial.println("Menghubungkan ke WiFi...");
+  while(WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Terhubung!");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // 1. FILTER DIGITAL: Meratakan pembacaan agar stabil dari riak air
+  totalSampel = totalSampel - arraySampel[indexSampel]; 
+  arraySampel[indexSampel] = analogRead(turbidityPin);  
+  totalSampel = totalSampel + arraySampel[indexSampel]; 
+  indexSampel = indexSampel + 1; 
+  if (indexSampel >= jumlahSampel) {
+    indexSampel = 0; 
+  }
+  
+  int sensorValueAvg = totalSampel / jumlahSampel;
+
+  // 2. PENGIRIMAN THINGSPEAK (Tiap 30 Detik)
+  if(currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    
+    // Perhitungan tegangan asli dari pembagi tegangan (voltage divider)
+    float pinVoltage = sensorValueAvg * (3.3 / 4095.0);
+    float realSensorVoltage = pinVoltage * ((R1 + R2) / R2);
+
+    // Tampilkan data di Serial Monitor untuk pemantauan
+    Serial.print("Sampel: ");
+    Serial.print(currentNamaSampel);
+    Serial.print(" | ADC Avg: ");
+    Serial.print(sensorValueAvg);
+    Serial.print(" | Volt: ");
+    Serial.print(realSensorVoltage);
+    Serial.print(" V | Label Fisik: ");
+    Serial.print(currentLabel);
+    Serial.println();
+
+    // Kirim HTTP GET ke ThingSpeak
+    if(WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      String serverPath = String(serverName) + "?api_key=" + apiKey + 
+                          "&field1=" + String(sensorValueAvg) + 
+                          "&field2=" + String(realSensorVoltage) + 
+                          "&field3=" + String(currentKelas) + 
+                          "&field4=" + currentLabel;
+      
+      http.begin(serverPath);
+      int httpResponseCode = http.GET();
+      
+      if (httpResponseCode > 0) {
+        Serial.print("Sukses Kirim! Kode HTTP: ");
+        Serial.println(httpResponseCode);
+      } else {
+        Serial.print("Gagal Kirim. Kode HTTP: ");
+        Serial.println(httpResponseCode);
+      }
+      http.end();
+    } else {
+      WiFi.reconnect();
+    }
+  }
+  delay(10); 
+}
